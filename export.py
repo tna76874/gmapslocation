@@ -6,7 +6,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from sqlmodel import SQLModel, Field, create_engine, Session
+from sqlmodel import SQLModel, Field, create_engine, Session, select
 from locationsharinglib import Service
 import argparse
 from urllib.parse import quote
@@ -21,6 +21,7 @@ class PersonModel(SQLModel, table=True):
     latitude: float
     longitude: float
     timestamp: Optional[str] = None
+    datetime: Optional[str] = None
     accuracy: Optional[float] = None
     address: Optional[str] = None
     country_code: Optional[str] = None
@@ -29,12 +30,12 @@ class PersonModel(SQLModel, table=True):
 
     def __init__(self, **data):
         # Timestamp umwandeln, falls nötig
-        raw_ts = data.get("timestamp")
+        raw_ts = data.get("datetime")
         if raw_ts is not None and not isinstance(raw_ts, str):
             try:
-                data["timestamp"] = datetime.fromtimestamp(float(raw_ts)/1000, tz=timezone.utc).isoformat()
+                data["datetime"] = datetime.fromtimestamp(float(raw_ts)/1000, tz=timezone.utc).isoformat()
             except (ValueError, TypeError):
-                data["timestamp"] = None  # fallback wenn ungültig
+                data["datetime"] = None  # fallback wenn ungültig
 
         super().__init__(**data)
 
@@ -52,26 +53,14 @@ class PersonModel(SQLModel, table=True):
         combined = "|".join(values)
         return hashlib.sha256(combined.encode('utf-8')).hexdigest()
 
-    def get_unix_timestamp(self) -> Optional[int]:
-        """
-        Gibt den Unix-Timestamp zurück, wenn ein gültiger `timestamp` vorhanden ist,
-        andernfalls gibt es None zurück.
-        """
-        if self.timestamp:
-            try:
-                # Umwandlung des ISO 8601 datetime-Strings in ein datetime-Objekt
-                dt = datetime.fromisoformat(self.timestamp)
-                # Umwandlung in Unix-Timestamp
-                return int(dt.timestamp())
-            except ValueError:
-                # Falls der Timestamp ungültig ist, geben wir None zurück
-                return None
-        return None
 
 class UploadedModel(SQLModel, table=True):
     __table_args__ = {"extend_existing": True}
-    id: str = Field(default=None, primary_key=True)
-    person_id: str = Field(foreign_key="personmodel.id")
+    
+    id: str = Field(
+        primary_key=True,
+        foreign_key="personmodel.id"
+    )
     upload_datetime: datetime = Field(default_factory=datetime.utcnow)
 
 def load_config():
@@ -97,6 +86,7 @@ def create_person(person_data, engine):
         latitude=person_data['_latitude'],
         longitude=person_data['_longitude'],
         timestamp=person_data['_timestamp'],
+        datetime=person_data['_timestamp'],
         accuracy=person_data['_accuracy'],
         address=person_data['_address'],
         country_code=person_data['_country_code'],
@@ -108,7 +98,7 @@ def create_person(person_data, engine):
         # Prüfe, ob die ID bereits existiert
         existing = session.get(PersonModel, person.id)
         if existing:
-            return None
+            return existing
 
         session.add(person)
         session.commit()
@@ -116,10 +106,17 @@ def create_person(person_data, engine):
         return person
     
 
-def create_uploaded(person_id: str, engine):
-    uploaded = UploadedModel(person_id=person_id)
-    
+def create_uploaded(person: PersonModel, engine):
     with Session(engine) as session:
+        result = session.get(UploadedModel,person.id)
+        
+        if result is not None:
+            # Eintrag existiert bereits, nichts tun oder bestehenden zurückgeben
+            return result
+    
+        uploaded = UploadedModel(id=person.id)
+
+
         session.add(uploaded)
         session.commit()
         session.refresh(uploaded)
@@ -157,10 +154,9 @@ def update_position(person: PersonModel, config: dict, engine) -> str:
     try:
         response = requests.get(url)
         response.raise_for_status()  # Wird eine Ausnahme auslösen, wenn der Statuscode 4xx/5xx ist
-        print(f"Request erfolgreich: {response.status_code}")
 
         # Wenn erfolgreich, speichern wir den Hash und das aktuelle datetime in der Uploaded-Tabelle
-        create_uploaded(person.id, person.compute_hash(), engine)
+        create_uploaded(person.id, engine)
         return response.text  # Gibt die Antwort des Servers zurück (kann JSON oder HTML sein)
     except requests.exceptions.RequestException as e:
         print(f"Fehler beim Senden der Anfrage: {e}")
@@ -179,6 +175,26 @@ def main():
         print("Database update complete.")
     else:
         print("No action specified. Use --update to update the database.")
+        
+def ensure_all_positions_uploaded(config: dict, engine):
+    with Session(engine) as session:
+        # Alle Person-IDs abrufen
+        all_persons_stmt = select(PersonModel)
+        all_persons = session.exec(all_persons_stmt).all()
+
+        # Alle bereits hochgeladenen IDs abrufen
+        uploaded_ids_stmt = select(UploadedModel.id)
+        uploaded_ids = set(session.exec(uploaded_ids_stmt).all())
+
+        # Alle Personen filtern, die noch nicht hochgeladen wurden
+        not_uploaded = [p for p in all_persons if p.id not in uploaded_ids]
+
+        results = []
+        for person in not_uploaded:
+            result = update_position(person, config, engine)
+            results.append((person.id, result))
+        
+        return results  # Optional: gibt Liste der Ergebnisse zurück
 
 
 if __name__ == "__main__":
@@ -186,3 +202,5 @@ if __name__ == "__main__":
     engine = setup_database(config)
 
     update_database(config)
+    ensure_all_positions_uploaded(config, engine)
+    
