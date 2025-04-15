@@ -10,6 +10,7 @@ on:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'export.py'
+      - 'cli.py'
   pull_request:
     branches:
       - master
@@ -18,6 +19,7 @@ on:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'export.py'
+      - 'cli.py'
 jobs:
   build-image:
     runs-on: ubuntu-latest

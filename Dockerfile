@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Define default command
-CMD ["python", "export.py"]
+CMD ["python", "cli.py", "--update", "--upload"]
