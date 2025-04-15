@@ -4,5 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     image: ghcr.io/tna76874/gmapslocation:latest
+    restart: on-failure
+    environment:
+      - INTERVAL_MINUTES=5
     volumes:
       - ./data:/app/data
