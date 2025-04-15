@@ -8,17 +8,16 @@ on:
       - stable
     paths:
       - 'Dockerfile'
-      - 'Dockerfile_base'
-      - 'server/COMMIT_HASH'
+      - 'requirements.txt'
+      - 'export.py'
   pull_request:
     branches:
       - master
       - main
     paths:
       - 'Dockerfile'
-      - 'Dockerfile_base'
-      - 'server/COMMIT_HASH'
-
+      - 'requirements.txt'
+      - 'export.py'
 jobs:
   build-image:
     runs-on: ubuntu-latest
