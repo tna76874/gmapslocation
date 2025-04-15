@@ -3,6 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: gmapslocation:latest
+    image: ghcr.io/tna76874/gmapslocation:latest
     volumes:
       - ./data:/app/data
