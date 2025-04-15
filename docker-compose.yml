@@ -1,0 +1,8 @@
+services:
+  gmapslocation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gmapslocation:latest
+    volumes:
+      - ./data:/app/data

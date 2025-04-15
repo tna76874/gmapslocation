@@ -108,7 +108,7 @@ def create_person(person_data, engine):
 
 def create_uploaded(person: PersonModel, engine):
     with Session(engine) as session:
-        result = session.get(UploadedModel,person.id)
+        result = session.get(UploadedModel, person.id)
         
         if result is not None:
             # Eintrag existiert bereits, nichts tun oder bestehenden zurückgeben
@@ -156,7 +156,7 @@ def update_position(person: PersonModel, config: dict, engine) -> str:
         response.raise_for_status()  # Wird eine Ausnahme auslösen, wenn der Statuscode 4xx/5xx ist
 
         # Wenn erfolgreich, speichern wir den Hash und das aktuelle datetime in der Uploaded-Tabelle
-        create_uploaded(person.id, engine)
+        create_uploaded(person, engine)
         return response.text  # Gibt die Antwort des Servers zurück (kann JSON oder HTML sein)
     except requests.exceptions.RequestException as e:
         print(f"Fehler beim Senden der Anfrage: {e}")
