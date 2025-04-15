@@ -12,6 +12,9 @@ import argparse
 from urllib.parse import quote
 import requests
 
+import threading
+import time
+
 
 class PersonModel(SQLModel, table=True):
     __table_args__ = {"extend_existing": True}
@@ -152,6 +155,34 @@ class LocationUpdater:
                 result = self.update_position(person)
                 results.append((person.id, result))
             return results
+        
+    def run(self):
+        self.update_database()
+        self.ensure_all_positions_uploaded()
+        
+class CronJob(threading.Thread):
+    def __init__(self, interval_seconds, target_function, *args, **kwargs):
+        super().__init__()
+        self.interval = interval_seconds
+        self.target_function = target_function
+        self.args = args
+        self.kwargs = kwargs
+        self._stop_event = threading.Event()
+
+    def run(self):
+        while not self._stop_event.is_set():
+            start_time = time.time()
+            try:
+                self.target_function(*self.args, **self.kwargs)
+            except Exception as e:
+                print(f"Fehler beim Ausführen der Funktion: {e}")
+            elapsed = time.time() - start_time
+            time_to_wait = self.interval - elapsed
+            if time_to_wait > 0:
+                self._stop_event.wait(time_to_wait)
+
+    def stop(self):
+        self._stop_event.set()
 
 if __name__ == "__main__":
     self = LocationUpdater()
