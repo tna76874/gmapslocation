@@ -11,6 +11,7 @@ on:
       - 'requirements.txt'
       - 'export.py'
       - 'cli.py'
+      - 'build.sh'
   pull_request:
     branches:
       - master
@@ -20,6 +21,7 @@ on:
       - 'requirements.txt'
       - 'export.py'
       - 'cli.py'
+      - 'build.sh'
 jobs:
   build-image:
     runs-on: ubuntu-latest
