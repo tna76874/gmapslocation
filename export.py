@@ -4,7 +4,7 @@ import yaml
 import os
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, UTC
 from typing import Optional
 from sqlmodel import SQLModel, Field, create_engine, Session, select
 from locationsharinglib import Service
@@ -65,19 +65,76 @@ class UploadedModel(SQLModel, table=True):
         foreign_key="personmodel.id"
     )
     upload_datetime: datetime = Field(default_factory=datetime.utcnow)
+    
+class ErrorMessageModel(SQLModel, table=True):
+    __tablename__ = "errors"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)  # UUID als ID
+    error_code: int = Field(..., description="Error Code")
+    error_message: str = Field(default=None)  # Standardmäßig None, wird in der Validierung gesetzt
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    additional_info: Optional[str] = None
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        ERROR_CODES = {
+            100: "Invalid cookie",
+        }
+        # Validierung des error_code und Setzen der error_message
+        if self.error_code not in ERROR_CODES:
+            raise ValidationError(f"Ungültiger Fehlercode: {self.error_code}")
+        self.error_message = ERROR_CODES[self.error_code]
 
 class LocationUpdater:
     def __init__(self, config_path: str = "./data/config.yml"):
         self.config = self.load_config(config_path)
         self.engine = self.setup_database(self.config)
-        self.service = Service(
-            cookies_file=os.path.abspath(self.config.get('cookies_path', './data/cookies.txt')),
-            authenticating_account=self.config['email']
-        )
+        self.push = self._initialize_push()
+        self.service = self._initialize_service()
+
+    def _initialize_push(self):
+        try:
+            host = self.config['gotify']['host']
+            token = self.config['gotify']['key']
+            return PushNotify(host=host, token=token)
+        except KeyError as e:
+            raise ValueError(f"Missing configuration for PushNotify: {e}")
+
+    def _initialize_service(self):
+        try:
+            return Service(
+                cookies_file=os.path.abspath(self.config.get('cookies_path', './data/cookies.txt')),
+                authenticating_account=self.config['email']
+            )
+        except Exception as e:
+            if not self.error_codes_in_last(int(60*60*12)):
+                self.add_error_code_to_db(100)
+                self.push.send("Invalid cookie")
+            raise ValueError("Invalid Cookies")
 
     def load_config(self, path: str):
         with open(path, 'r') as file:
             return yaml.safe_load(file)
+        
+    def add_error_code_to_db(self, error_code: int):
+        """Fügt einen Fehlercode zur Datenbank hinzu."""
+        with Session(self.engine) as session:
+            error_entry = ErrorMessageModel(
+                error_code=error_code
+            )
+            session.add(error_entry)
+            session.commit()
+
+    def error_codes_in_last(self, seconds: int) -> bool:
+        """Überprüft, ob in der letzten Zeitspanne 'time' ein Fehlercode vorhanden war."""
+        time_threshold = datetime.now(UTC) - timedelta(seconds=seconds)
+
+        with Session(self.engine) as session:
+            statement = select(ErrorMessageModel).where(ErrorMessageModel.timestamp >= time_threshold)
+            results = session.exec(statement).all()
+
+        return len(results) > 0 
 
     def setup_database(self, config):
         db_path = os.path.abspath(config.get('db_path', './data/data.db'))
@@ -183,8 +240,32 @@ class CronJob(threading.Thread):
 
     def stop(self):
         self._stop_event.set()
+        
+class PushNotify:
+    def __init__(self, host=None, token=None, **kwargs):
+        if host is None or token is None:
+            raise ValueError("Host and token must be provided.")
+
+        if not host.startswith("https://"):
+            host = "https://" + host
+            
+        self.host = host
+        self.token = token
+        self.payload = {
+                            "priority": 8,
+                            "title": 'GMAPS',
+                        }
+        self.payload.update(kwargs)
+        
+    def send(self, message):
+        url = f"{self.host}/message?token={self.token}"
+        payload = self.payload.copy()
+        payload['message'] = message
+        response = requests.post(url, json=payload)
+        return response.status_code == 200
 
 if __name__ == "__main__":
+    pass
     self = LocationUpdater()
 
     
