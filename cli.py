@@ -11,9 +11,15 @@ def main():
     parser.add_argument('--upload', action='store_true', help="Ensure all positions are uploaded.")
     parser.add_argument('--run', action='store_true', help="Periodically run updater.run().")
     parser.add_argument('--interval', type=int, default=5, help="Interval in minutes for --run mode (default: 5).")
+    parser.add_argument('--close-threshold', type=int, default=300, help="Distance in meters for 'close' status.")
+    parser.add_argument('--far-threshold', type=int, default=500, help="Distance in meters for 'far' status.")
+
 
     args = parser.parse_args()
-    updater = LocationUpdater()
+    updater = LocationUpdater(
+        close_threshold=args.close_threshold,
+        far_threshold=args.far_threshold
+    )
 
     if args.update:
         updater.update_database()

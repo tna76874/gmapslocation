@@ -7,10 +7,14 @@ import uuid
 from datetime import datetime, timezone, timedelta, UTC
 from typing import Optional
 from sqlmodel import SQLModel, Field, create_engine, Session, select
+from pydantic import model_validator
 from locationsharinglib import Service
 import argparse
 from urllib.parse import quote
 import requests
+from itertools import combinations
+from geopy.distance import geodesic
+from collections import defaultdict
 
 import threading
 import time
@@ -33,10 +37,10 @@ class PersonModel(SQLModel, table=True):
 
     def __init__(self, **data):
         # Timestamp umwandeln, falls nötig
-        raw_ts = data.get("datetime")
+        raw_ts = data.get("timestamp")
         if raw_ts is not None and not isinstance(raw_ts, str):
             try:
-                data["datetime"] = datetime.fromtimestamp(float(raw_ts)/1000, tz=timezone.utc).isoformat()
+                data["datetime"] = datetime.fromtimestamp(float(raw_ts)/1000, tz=timezone.utc)#.isoformat()
             except (ValueError, TypeError):
                 data["datetime"] = None  # fallback wenn ungültig
 
@@ -45,6 +49,9 @@ class PersonModel(SQLModel, table=True):
         # ID aus Hash berechnen, falls nicht gesetzt
         if not self.id:
             self.id = self.compute_hash()
+            
+    def get_datetime(self):
+        return datetime.fromisoformat(self.datetime)
 
     def compute_hash(self) -> str:
         keys = [
@@ -55,6 +62,30 @@ class PersonModel(SQLModel, table=True):
         values = [str(v) if v is not None else '' for v in keys]
         combined = "|".join(values)
         return hashlib.sha256(combined.encode('utf-8')).hexdigest()
+
+class ProximityModel(SQLModel, table=True):
+    __tablename__ = "proximities"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    person1_id: str = Field(foreign_key="personmodel.id")
+    person2_id: str = Field(foreign_key="personmodel.id")
+
+    spatial_distance: float = Field(
+        ...,
+        description="Räumlicher Abstand zwischen den beiden Standorten in Metern",
+        ge=0
+    )
+
+    temporal_distance: float = Field(
+        ...,
+        description="Zeitlicher Abstand zwischen den beiden Zeitstempeln in Sekunden",
+        ge=0
+    )
+
+    ts: datetime = Field(
+        ..., description="Mittelwert der beiden Zeitstempel"
+    )
 
 
 class UploadedModel(SQLModel, table=True):
@@ -87,17 +118,143 @@ class ErrorMessageModel(SQLModel, table=True):
         self.error_message = ERROR_CODES[self.error_code]
 
 class LocationUpdater:
-    def __init__(self, config_path: str = "./data/config.yml"):
+    def __init__(self, config_path: str = "./data/config.yml", close_threshold=300, far_threshold=500):
         self.config = self.load_config(config_path)
         self.engine = self.setup_database(self.config)
         self.push = self._initialize_push()
         self._service = None
+
+        # Distanz-Schwellen speichern
+        self.close_threshold = close_threshold
+        self.far_threshold = far_threshold
 
     @property
     def service(self):
         if self._service is None:
             self._service = self._initialize_service()
         return self._service
+    
+    def check_proximities(self):
+        """
+        Nutzt die beim Objekt gesetzten Thresholds für Nähe/Ferne.
+        Führt Statusprüfung und ggf. Push durch.
+        """
+        self.update_proximities()
+        self.load_proximities_with_status(
+            close_threshold=self.close_threshold,
+            far_threshold=self.far_threshold
+        )
+
+    def load_proximities_with_status(self, close_threshold=300, far_threshold=500):
+        with Session(self.engine) as session:
+            proximities = session.exec(select(ProximityModel)).all()
+
+            # Personen-Vollnamen mappen
+            person_ids = set(p.person1_id for p in proximities) | set(p.person2_id for p in proximities)
+            persons = session.exec(select(PersonModel).where(PersonModel.id.in_(person_ids))).all()
+            person_map = {p.id: p.full_name for p in persons}
+
+            # Pärchen → Einträge gruppieren
+            pair_history = defaultdict(list)
+            for p in proximities:
+                name1 = person_map.get(p.person1_id, "Unknown1")
+                name2 = person_map.get(p.person2_id, "Unknown2")
+                pair_key = frozenset([name1, name2])
+                pair_history[pair_key].append({
+                    "ts": p.ts,
+                    "distance": p.spatial_distance
+                })
+
+            result = []
+            for pair_key, records in pair_history.items():
+                sorted_records = sorted(records, key=lambda r: r["ts"])[-4:]  # Nur die letzten 4
+                status_list = []
+                for rec in sorted_records:
+                    dist = rec["distance"]
+                    if dist < close_threshold:
+                        status_list.append(("close", rec["ts"]))
+                    elif dist > far_threshold:
+                        status_list.append(("far", rec["ts"]))
+                    else:
+                        status_list.append(("neutral", rec["ts"]))
+
+                # Nur die letzten zwei analysieren
+                recent_statuses = [s for s in status_list if s[0] in {"close", "far"}][-2:]
+                status_change = None
+                if len(recent_statuses) == 2:
+                    s1, s2 = recent_statuses[0][0], recent_statuses[1][0]
+                    if s1 == s2:
+                        current_type = s1
+                        full_same_count = sum(1 for s, _ in status_list if s == current_type)
+                        if full_same_count < 3:
+                            status_change = current_type
+                            # Push senden
+                            name1, name2 = sorted(pair_key)
+                            timestamp = recent_statuses[-1][1].isoformat()
+                            msg = f"🔔 Statusänderung bei {name1} & {name2}: Jetzt '{current_type.upper()}' ({timestamp})"
+                            self.push.send(msg)
+
+                result.append({
+                    "pair": list(pair_key),
+                    "history": status_list,
+                    "current_status": status_change
+                })
+
+        return result
+
+    def update_proximities(self):
+        now = datetime.now(timezone.utc)
+        time_threshold = now - timedelta(minutes=5)
+    
+        with Session(self.engine) as session:
+            persons = session.exec(
+                select(PersonModel).where(PersonModel.datetime != None)
+            ).all()
+    
+            latest = {}
+            for p in persons:
+                if p.full_name not in latest or p.get_datetime() > latest[p.full_name].get_datetime():
+                    latest[p.full_name] = p
+    
+            person_list = list(latest.values())
+    
+            for person1, person2 in combinations(person_list, 2):
+                dt1 = person1.get_datetime()
+                dt2 = person2.get_datetime()
+                time_diff = abs((dt1 - dt2).total_seconds())
+                if time_diff > 300:
+                    continue
+    
+                distance = geodesic(
+                    (person1.latitude, person1.longitude),
+                    (person2.latitude, person2.longitude)
+                ).meters
+    
+                existing_proximity = session.exec(
+                    select(ProximityModel).where(
+                        ((ProximityModel.person1_id == person1.id) & 
+                         (ProximityModel.person2_id == person2.id)) |
+                        ((ProximityModel.person1_id == person2.id) & 
+                         (ProximityModel.person2_id == person1.id))
+                    )
+                ).first()
+    
+                if existing_proximity:
+                    continue
+    
+                # Mittelwert der beiden Zeitstempel berechnen
+                avg_datetime = dt1 + (dt2 - dt1) / 2
+    
+                proximity = ProximityModel(
+                    person1_id=person1.id,
+                    person2_id=person2.id,
+                    spatial_distance=distance,
+                    temporal_distance=time_diff,
+                    ts=avg_datetime
+                )
+                session.add(proximity)
+    
+            session.commit()
 
     def _initialize_push(self):
         try:
@@ -222,6 +379,7 @@ class LocationUpdater:
     def run(self):
         self.update_database()
         self.ensure_all_positions_uploaded()
+        self.check_proximities()
         
 class CronJob(threading.Thread):
     def __init__(self, interval_seconds, target_function, *args, **kwargs):
