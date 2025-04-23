@@ -91,7 +91,13 @@ class LocationUpdater:
         self.config = self.load_config(config_path)
         self.engine = self.setup_database(self.config)
         self.push = self._initialize_push()
-        self.service = self._initialize_service()
+        self._service = None
+
+    @property
+    def service(self):
+        if self._service is None:
+            self._service = self._initialize_service()
+        return self._service
 
     def _initialize_push(self):
         try:
