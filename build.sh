@@ -8,25 +8,12 @@ IMAGEAPPEND=${2:-}
 
 # Setze Variablen, falls sie nicht bereits gesetzt sind (nützlich für lokale Ausführung)
 : "${GITHUB_REF:=refs/heads/$(git symbolic-ref --short HEAD)}"
+: "${GITHUB_REPOSITORY:=$(git config --get remote.origin.url | sed 's/.*github.com.//;s/.git$//')}"
 
-REMOTE_URL=$(git config --get remote.origin.url)
-# Überprüfe, ob die URL "github.com" enthält
-if [[ $REMOTE_URL == *"github.com"* ]]; then
-    # Extrahiere den Repository-Namen von der GitHub-URL
-    : "${GITHUB_REPOSITORY:=$(git config --get remote.origin.url | sed 's/.*github.com.//;s/.git$//')}"
-else
-    # Extrahiere den Repository-Namen aus der URL
-    : "${GITHUB_REPOSITORY:=$(basename "$REMOTE_URL" .git)}"
-fi
-
-COMMIT_HASH=$(cat server/COMMIT_HASH)
+COMMIT_HASH=$(git rev-parse HEAD)
 CURRENT_DATE=$(date +'%Y%m%d')
 CURRENT_DATE_WITH_HOUR=$(date +'%Y%m%d%H')
-if [[ $REMOTE_URL == *"github.com"* ]]; then
-  IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY}${IMAGEAPPEND}"
-else
-  IMAGE_NAME="local/${GITHUB_REPOSITORY}${IMAGEAPPEND}"
-fi
+IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY}${IMAGEAPPEND}"
 
 # Festlegen des Kanals basierend auf dem Branch
 CHANNEL=""
@@ -42,7 +29,6 @@ echo "IMAGE_NAME ${IMAGE_NAME}"
 build_image() {
   TAG=$1
   docker build . --file ${DOCKERFILE} --tag ${IMAGE_NAME}:${TAG}
-  echo "Building ${IMAGE_NAME}:${TAG}"
 }
 
 # Funktion zum Pushen des Docker-Images
