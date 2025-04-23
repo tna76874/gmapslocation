@@ -87,6 +87,14 @@ class ProximityModel(SQLModel, table=True):
         ..., description="Mittelwert der beiden Zeitstempel"
     )
 
+class ProximityNotification(SQLModel, table=True):
+    __tablename__ = "proximity_notification"
+    __table_args__ = {"extend_existing": True}
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    proximity_id: str = Field(foreign_key="proximities.id")
+    status: str  # z. B. "close" oder "far"
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 class UploadedModel(SQLModel, table=True):
     __table_args__ = {"extend_existing": True}
@@ -118,7 +126,7 @@ class ErrorMessageModel(SQLModel, table=True):
         self.error_message = ERROR_CODES[self.error_code]
 
 class LocationUpdater:
-    def __init__(self, config_path: str = "./data/config.yml", close_threshold=300, far_threshold=500):
+    def __init__(self, config_path: str = "./data/config.yml", close_threshold=1000, far_threshold=1000):
         self.config = self.load_config(config_path)
         self.engine = self.setup_database(self.config)
         self.push = self._initialize_push()
@@ -145,15 +153,15 @@ class LocationUpdater:
             far_threshold=self.far_threshold
         )
 
-    def load_proximities_with_status(self, close_threshold=300, far_threshold=500):
+    def load_proximities_with_status(self, close_threshold=1000, far_threshold=1000):
         with Session(self.engine) as session:
             proximities = session.exec(select(ProximityModel)).all()
-
+    
             # Personen-Vollnamen mappen
             person_ids = set(p.person1_id for p in proximities) | set(p.person2_id for p in proximities)
             persons = session.exec(select(PersonModel).where(PersonModel.id.in_(person_ids))).all()
             person_map = {p.id: p.full_name for p in persons}
-
+    
             # Pärchen → Einträge gruppieren
             pair_history = defaultdict(list)
             for p in proximities:
@@ -162,9 +170,10 @@ class LocationUpdater:
                 pair_key = frozenset([name1, name2])
                 pair_history[pair_key].append({
                     "ts": p.ts,
-                    "distance": p.spatial_distance
+                    "distance": p.spatial_distance,
+                    "id": p.id,
                 })
-
+    
             result = []
             for pair_key, records in pair_history.items():
                 sorted_records = sorted(records, key=lambda r: r["ts"])[-4:]  # Nur die letzten 4
@@ -172,35 +181,64 @@ class LocationUpdater:
                 for rec in sorted_records:
                     dist = rec["distance"]
                     if dist < close_threshold:
-                        status_list.append(("close", rec["ts"]))
+                        status_list.append(("close", rec["ts"], rec["id"]))
                     elif dist > far_threshold:
-                        status_list.append(("far", rec["ts"]))
+                        status_list.append(("far", rec["ts"], rec["id"]))
                     else:
-                        status_list.append(("neutral", rec["ts"]))
-
-                # Nur die letzten zwei analysieren
+                        status_list.append(("neutral", rec["ts"], rec["id"]))
+    
+                # Nur die letzten zwei "close"/"far" analysieren
                 recent_statuses = [s for s in status_list if s[0] in {"close", "far"}][-2:]
                 status_change = None
                 if len(recent_statuses) == 2:
                     s1, s2 = recent_statuses[0][0], recent_statuses[1][0]
                     if s1 == s2:
                         current_type = s1
-                        full_same_count = sum(1 for s, _ in status_list if s == current_type)
+                        full_same_count = sum(1 for s, _, _ in status_list if s == current_type)
                         if full_same_count < 3:
+                            # Letzter Eintrag für Notification
+                            last_type, last_ts, last_id = recent_statuses[-1]
+    
+                            # Vorher prüfen, ob Benachrichtigung schon existiert
+                            existing = session.exec(
+                                select(ProximityNotification).where(
+                                    ProximityNotification.proximity_id == last_id,
+                                    ProximityNotification.status == current_type
+                                )
+                            ).first()
+    
+                            if not existing:
+                                # Push senden
+                                name1, name2 = sorted(pair_key)
+                                timestamp = last_ts.isoformat()
+                                msg = (
+                                    f"🔔 Statusänderung:\n"
+                                    f"{name1}\n"
+                                    f"{name2}\n"
+                                    f"→ Jetzt: '{current_type.upper()}'\n"
+                                    f"({timestamp})"
+                                )
+                                self.push.send(msg)
+    
+                                # Notification speichern
+                                notification = ProximityNotification(
+                                    proximity_id=last_id,
+                                    status=current_type,
+                                    timestamp=last_ts
+                                )
+                                session.add(notification)
+                                session.commit()
+    
                             status_change = current_type
-                            # Push senden
-                            name1, name2 = sorted(pair_key)
-                            timestamp = recent_statuses[-1][1].isoformat()
-                            msg = f"🔔 Statusänderung bei {name1} & {name2}: Jetzt '{current_type.upper()}' ({timestamp})"
-                            self.push.send(msg)
-
+    
                 result.append({
                     "pair": list(pair_key),
-                    "history": status_list,
+                    "history": [(s, ts.isoformat()) for s, ts, _ in status_list],
                     "current_status": status_change
                 })
-
+    
         return result
+
 
     def update_proximities(self):
         now = datetime.now(timezone.utc)
