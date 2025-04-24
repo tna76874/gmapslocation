@@ -126,15 +126,19 @@ class ErrorMessageModel(SQLModel, table=True):
         self.error_message = ERROR_CODES[self.error_code]
 
 class LocationUpdater:
-    def __init__(self, config_path: str = "./data/config.yml", close_threshold=1000, far_threshold=1000):
+    def __init__(self, config_path: str = "./data/config.yml", *args, **kwargs):
+        # Konfiguration laden
         self.config = self.load_config(config_path)
+        
+        # Datenbank einrichten (implemetiere setup_database nach Bedarf)
         self.engine = self.setup_database(self.config)
         self.push = self._initialize_push()
         self._service = None
 
-        # Distanz-Schwellen speichern
-        self.close_threshold = close_threshold
-        self.far_threshold = far_threshold
+        # Schwellenwerte aus der Konfiguration auslesen
+        thresholds = self.config.get('thresholds', {})
+        self.close_threshold = thresholds.get('close', 1000)
+        self.far_threshold = thresholds.get('far', 1000)
 
     @property
     def service(self):
@@ -242,11 +246,12 @@ class LocationUpdater:
 
     def update_proximities(self):
         now = datetime.now(timezone.utc)
-        time_threshold = now - timedelta(minutes=5)
+        time_threshold = now - timedelta(hours=1)
     
         with Session(self.engine) as session:
             persons = session.exec(
-                select(PersonModel).where(PersonModel.datetime != None)
+                select(PersonModel)
+                .where(PersonModel.datetime != None, PersonModel.datetime >= time_threshold)
             ).all()
     
             latest = {}
