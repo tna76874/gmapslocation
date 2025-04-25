@@ -225,7 +225,7 @@ class LocationUpdater:
                                     f"{name2}\n\n"
                                     f"{timestamp}"
                                 )
-                                self.push.send(msg, priority=2)
+                                self.push.send(msg, priority=3)
     
                                 # Notification speichern
                                 notification = ProximityNotification(
