@@ -15,6 +15,7 @@ import requests
 from itertools import combinations
 from geopy.distance import geodesic
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 import threading
 import time
@@ -214,15 +215,17 @@ class LocationUpdater:
                             if not existing:
                                 # Push senden
                                 name1, name2 = sorted(pair_key)
-                                timestamp = last_ts.isoformat()
+                                last_ts_utc = last_ts.replace(tzinfo=ZoneInfo("UTC"))
+                                last_ts_berlin = last_ts_utc.astimezone(ZoneInfo("Europe/Berlin"))
+                                timestamp = last_ts_berlin.strftime("%d.%m.%Y %H:%M Uhr")
+                                
                                 msg = (
-                                    f"🔔 Statusänderung:\n"
+                                    f"🔔 '{current_type.upper()}':\n\n"
                                     f"{name1}\n"
-                                    f"{name2}\n"
-                                    f"→ Jetzt: '{current_type.upper()}'\n"
+                                    f"{name2}\n\n"
                                     f"({timestamp})"
                                 )
-                                self.push.send(msg)
+                                self.push.send(msg, priority=5)
     
                                 # Notification speichern
                                 notification = ProximityNotification(
@@ -464,9 +467,10 @@ class PushNotify:
                         }
         self.payload.update(kwargs)
         
-    def send(self, message):
+    def send(self, message, **kwargs):
         url = f"{self.host}/message?token={self.token}"
         payload = self.payload.copy()
+        payload.update(kwargs)
         payload['message'] = message
         response = requests.post(url, json=payload)
         return response.status_code == 200
