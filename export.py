@@ -220,12 +220,12 @@ class LocationUpdater:
                                 timestamp = last_ts_berlin.strftime("%d.%m.%Y %H:%M Uhr")
                                 
                                 msg = (
-                                    f"🔔 '{current_type.upper()}':\n\n"
+                                    f"🔔 {current_type.upper()}\n\n"
                                     f"{name1}\n"
                                     f"{name2}\n\n"
-                                    f"({timestamp})"
+                                    f"{timestamp}"
                                 )
-                                self.push.send(msg, priority=5)
+                                self.push.send(msg, priority=2)
     
                                 # Notification speichern
                                 notification = ProximityNotification(
