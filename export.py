@@ -304,9 +304,16 @@ class LocationUpdater:
 
     def _initialize_push(self):
         try:
-            host = self.config['gotify']['host']
-            token = self.config['gotify']['key']
-            return PushNotify(host=host, token=token)
+            # Erstelle eine Kopie des gotify-Dictionarys, um das Original nicht zu verändern
+            gotify_kwargs = self.config.get('gotify', {}).copy()
+            
+            # Ziehe host und token (alias key) vorab heraus
+            host = gotify_kwargs.pop('host', None)
+            token = gotify_kwargs.pop('key', None)
+            
+            # Erstelle PushNotify, wobei host und token explizit übergeben werden und
+            # alle übrigen Parameter via **gotify_kwargs
+            return PushNotify(host=host, token=token, **gotify_kwargs)
         except KeyError as e:
             raise ValueError(f"Missing configuration for PushNotify: {e}")
 
@@ -319,7 +326,7 @@ class LocationUpdater:
         except Exception as e:
             if not self.error_codes_in_last(int(60*60*12)):
                 self.add_error_code_to_db(100)
-                self.push.send("Invalid cookie")
+                self.push.send("Invalid cookie", priority=8)
             raise ValueError("Invalid Cookies")
 
     def load_config(self, path: str):
